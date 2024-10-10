@@ -3,7 +3,8 @@ import os
 import random
 import torch
 from accelerate import Accelerator
-from diffusers import DDPMScheduler, UNet2DConditionModel
+from .DDPMScheduler import DDPMScheduler
+from unets import unet_2d_condition
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
