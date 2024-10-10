@@ -11,6 +11,34 @@ from tqdm import tqdm
 from MusicControlNet import MusicControlNet
 from MusicDataset import MusicDataset
 
+def get_text_embeds(tokenizer, text_encoder, prompt, negative_prompt, device="cuda"):
+        text_input = tokenizer(prompt, padding='max_length', max_length=tokenizer.model_max_length,
+                                    truncation=True, return_tensors='pt')
+        text_embeddings = text_encoder(text_input.input_ids.to(device))[0]
+        uncond_input = tokenizer(negative_prompt, padding='max_length', max_length=tokenizer.model_max_length,
+                                      return_tensors='pt')
+        uncond_embeddings = text_encoder(uncond_input.input_ids.to(device))[0]
+        text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+        return text_embeddings
+
+def encode_prompt(prompt_batch, text_encoder, tokenizer):
+    with torch.no_grad():
+        text_inputs = tokenizer(
+            prompt_batch,
+            padding="max_length",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids
+        prompt_embeds = text_encoder(
+            text_input_ids.to(text_encoder.device),
+            output_hidden_states=True,
+        )
+    # print('qwq1', prompt_embeds[0].shape)
+    # print('qwq2', prompt_embeds[1].shape)
+    return prompt_embeds[0]
+
 def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma, v_parameterization):
     if v_parameterization:
         snr = noise_scheduler.get_v_posterior_log_variance(timesteps)
@@ -25,13 +53,24 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma, v_paramete
 def train(args):
     accelerator = Accelerator()
     
+    text_encoder = CLIPTextModel.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="text_encoder",
+        revision=args.revision, cache_dir=args.cache_dir
+    )
+
     controlnet = MusicControlNet(num_genres=args.num_genres, num_moods=args.num_moods, num_controls=args.num_controls)
     unet = UNet2DConditionModel.from_pretrained(args.unet_model_name_or_path)
+
+    unet_para = filter(lambda p: p.requires_grad, unet.parameters()) #chain(unet_params, controlnet_params)
+    controlnet_para = filter(lambda p: p.requires_grad, controlnet.parameters()) #chain(unet_params, controlnet_params)
+    
+    prefix_token_para = filter(lambda p: p.requires_grad, loaded_prompt_learner.parameters())
+    all_params = itertools.chain(adapter_para, prefix_token_para)
     
     train_dataset = MusicDataset(args.train_data_dir, args.conditioning_data_dir)
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     
-    optimizer = torch.optim.AdamW(controlnet.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.AdamW(all_params, lr=args.learning_rate)
     
     noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
     
@@ -46,17 +85,24 @@ def train(args):
                 genre_ids = batch["genre_ids"]
                 mood_ids = batch["mood_ids"]
                 controls = batch["controls"]
+                text = batch["text_embedding"]
                 
+
+                text_embeddings = text_embeddings[0].cuda() # b 20 77 768
+                text_embeddings = text_embeddings[:, 3, :, :] # Select a description b 77 768
+                
+                output_prefix_token = loaded_prompt_learner(latents, clip_model, clip_processor)
+                encoder_hidden_states = torch.cat([output_prefix_token, text_embeddings], dim = 1)
                 noise = torch.randn_like(latents)
                 timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (latents.shape[0],), device=latents.device)
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
                 
-                down_block_res_samples, mid_block_res_sample = controlnet(noisy_latents, timesteps, genre_ids, mood_ids, controls)
+                down_block_res_samples, mid_block_res_sample = controlnet(noisy_latents, timesteps, encoder_hidden_states, genre_ids, mood_ids, controls)
                 
                 noise_pred = unet(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=None,
+                    encoder_hidden_states=encoder_hidden_states,
                     down_block_additional_residuals=down_block_res_samples,
                     mid_block_additional_residual=mid_block_res_sample,
                 ).sample
@@ -86,6 +132,12 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--pretrained_model_name_or_path",
+        type=str,
+        default="/root/autodl-tmp/cache_huggingface/huggingface/hub/models--runwayml--stable-diffusion-v1-5/",
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
     parser.add_argument("--train_data_dir", type=str, required=True)
     parser.add_argument("--conditioning_data_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
