@@ -1,6 +1,26 @@
 import torch
 from diffusers import DDPMPipeline
-from vocoder import Vocoder
+
+
+import librosa
+import librosa.display
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+def read_audio_from_filename(filename):
+    audio, sr = librosa.load(filename)
+    D = np.abs(librosa.stft(audio))**2
+    audio= librosa.feature.melspectrogram(y=audio, sr=sr, S=D)
+    return audio
+    
+    
+def convert_data(data_path):
+    wav_filename = data_path
+    audio = read_audio_from_filename(wav_filename)
+    return audio
+
 
 def generate_music(controlnet, genre_id, mood_id, controls, num_inference_steps, vocoder):
     controlnet.eval()
@@ -10,7 +30,8 @@ def generate_music(controlnet, genre_id, mood_id, controls, num_inference_steps,
         mel_spectrogram = controlnet(genre_id, mood_id, controls, num_inference_steps)
         
         # Convert the mel spectrogram to audio using the vocoder
-        audio = vocoder.melspectrogram_to_audio(mel_spectrogram)
+        mel_spectrogram = convert_data(mel_spectrogram)
+        audio = librosa.feature.inverse.mel_to_audio(mel_spectrogram)
     
     return audio
 
