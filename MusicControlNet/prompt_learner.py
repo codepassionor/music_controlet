@@ -33,7 +33,7 @@ class PrefixToken(nn.Module):
 
     def forward(self, image, clip_model, clip_processor, sub=1):
         image_rescaled = (image + 1) / 2
-        inputs = clip_processor(images=image_rescaled, return_tensors="pt")
+        inputs = clip_processor(images=image_rescaled, return_tensors="pt", do_rescale=False)
         vision_outputs = clip_model.vision_model(
             pixel_values=inputs['pixel_values'].to('cuda'),
             output_hidden_states=False,
@@ -48,12 +48,11 @@ class PrefixToken(nn.Module):
 
         return prefix_token
 
-    def save(self, file_path):
+    def save_model(self, file_path):
         torch.save(self.state_dict(), file_path)
 
     def load(self, file_path, device):
         self.load_state_dict(torch.load(file_path, map_location=device))
-
 
 def test():
     # Load CLIP model and processor
